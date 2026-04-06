@@ -13,11 +13,35 @@ const corsOrigins = (process.env.CORS_ORIGIN || "http://localhost:5173,http://lo
   .map((origin) => origin.trim())
   .filter(Boolean);
 
+const defaultAllowedOriginPatterns = [
+  /^http:\/\/localhost:(3000|5173)$/,
+  /^https:\/\/front-end-app-[a-z0-9]+\.onrender\.com$/,
+];
+
+const isOriginAllowed = (origin) => {
+  if (!origin) {
+    return true;
+  }
+
+  if (corsOrigins.includes(origin)) {
+    return true;
+  }
+
+  return defaultAllowedOriginPatterns.some((pattern) => pattern.test(origin));
+};
+
 app.use(
   cors({
-    origin: corsOrigins,
+    origin(origin, callback) {
+      if (isOriginAllowed(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error(`Origin not allowed by CORS: ${origin}`));
+    },
   })
 );
+app.options("*", cors());
 app.use(express.json());
 
 const customerRoutes = require("./routes/customerRoutes");

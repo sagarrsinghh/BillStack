@@ -1,15 +1,43 @@
 const mysql = require("mysql2");
 
-const connection = mysql.createConnection({
-  host: process.env.DB_HOST,
+const parseBoolean = (value) => {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return false;
+  return ["true", "1", "yes", "y"].includes(value.toLowerCase());
+};
+
+const buildSslConfig = () => {
+  if (!parseBoolean(process.env.DB_SSL)) {
+    return undefined;
+  }
+
+  if (parseBoolean(process.env.DB_SSL_REJECT_UNAUTHORIZED)) {
+    return { rejectUnauthorized: true };
+  }
+
+  return { rejectUnauthorized: false };
+};
+
+const connectionConfig = {
+  host: process.env.DB_HOST || "127.0.0.1",
+  port: Number(process.env.DB_PORT || 3306),
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-});
+  ssl: buildSslConfig(),
+};
+
+const connection = mysql.createConnection(connectionConfig);
 
 connection.connect((err) => {
   if (err) {
-    console.error("DB connection failed:", err);
+    console.error("DB connection failed:", {
+      message: err.message,
+      code: err.code,
+      host: connectionConfig.host,
+      port: connectionConfig.port,
+      database: connectionConfig.database,
+    });
   } else {
     console.log("MySQL Connected");
     ensureMasterStatusColumns();
