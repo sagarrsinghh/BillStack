@@ -41,7 +41,6 @@ app.use(
     },
   })
 );
-app.options("*", cors());
 app.use(express.json());
 
 const customerRoutes = require("./routes/customerRoutes");
