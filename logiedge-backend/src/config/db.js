@@ -27,22 +27,32 @@ const connectionConfig = {
   ssl: buildSslConfig(),
 };
 
-const connection = mysql.createConnection(connectionConfig);
+let connection = null;
+let connectPromise = null;
+let schemaEnsured = false;
 
-connection.connect((err) => {
-  if (err) {
-    console.error("DB connection failed:", {
-      message: err.message,
-      code: err.code,
-      host: connectionConfig.host,
-      port: connectionConfig.port,
-      database: connectionConfig.database,
-    });
-  } else {
-    console.log("MySQL Connected");
-    ensureMasterStatusColumns();
+const logConnectionError = (err) => {
+  console.error("DB connection failed:", {
+    message: err.message,
+    code: err.code,
+    host: connectionConfig.host,
+    port: connectionConfig.port,
+    database: connectionConfig.database,
+  });
+};
+
+const handleConnectionError = (err) => {
+  if (!err) {
+    return;
   }
-});
+
+  console.error("MySQL connection error:", err.message);
+
+  if (err.fatal) {
+    connection = null;
+    connectPromise = null;
+  }
+};
 
 const ensureColumn = (table, column, definition, callback) => {
   connection.query(
@@ -78,6 +88,12 @@ const ensureColumn = (table, column, definition, callback) => {
 };
 
 const ensureMasterStatusColumns = () => {
+  if (schemaEnsured) {
+    return;
+  }
+
+  schemaEnsured = true;
+
   ensureColumn(
     "customers",
     "status",
@@ -90,4 +106,118 @@ const ensureMasterStatusColumns = () => {
   );
 };
 
-module.exports = connection;
+const connect = async () => {
+  if (connection) {
+    return connection;
+  }
+
+  if (connectPromise) {
+    return connectPromise;
+  }
+
+  connectPromise = new Promise((resolve, reject) => {
+    const nextConnection = mysql.createConnection(connectionConfig);
+
+    nextConnection.connect((err) => {
+      if (err) {
+        logConnectionError(err);
+        connectPromise = null;
+        return reject(err);
+      }
+
+      connection = nextConnection;
+      connectPromise = null;
+
+      connection.on("error", handleConnectionError);
+
+      console.log("MySQL Connected");
+      ensureMasterStatusColumns();
+      resolve(connection);
+    });
+  });
+
+  return connectPromise;
+};
+
+const withReconnect = async (operation) => {
+  try {
+    await connect();
+    return await operation(connection);
+  } catch (err) {
+    if (err && err.fatal) {
+      connection = null;
+      connectPromise = null;
+      await connect();
+      return operation(connection);
+    }
+
+    throw err;
+  }
+};
+
+connect().catch(() => {});
+
+module.exports = {
+  query(sql, params, callback) {
+    const values = Array.isArray(params) ? params : [];
+    const done = typeof params === "function" ? params : callback;
+
+    withReconnect(
+      (activeConnection) =>
+        new Promise((resolve, reject) => {
+          activeConnection.query(sql, values, (err, result) => {
+            if (err) {
+              return reject(err);
+            }
+
+            resolve(result);
+          });
+        })
+    )
+      .then((result) => done?.(null, result))
+      .catch((err) => done?.(err));
+  },
+
+  beginTransaction(callback) {
+    withReconnect(
+      (activeConnection) =>
+        new Promise((resolve, reject) => {
+          activeConnection.beginTransaction((err) => {
+            if (err) {
+              return reject(err);
+            }
+
+            resolve();
+          });
+        })
+    )
+      .then(() => callback?.(null))
+      .catch((err) => callback?.(err));
+  },
+
+  commit(callback) {
+    withReconnect(
+      (activeConnection) =>
+        new Promise((resolve, reject) => {
+          activeConnection.commit((err) => {
+            if (err) {
+              return reject(err);
+            }
+
+            resolve();
+          });
+        })
+    )
+      .then(() => callback?.(null))
+      .catch((err) => callback?.(err));
+  },
+
+  rollback(callback) {
+    if (!connection) {
+      callback?.();
+      return;
+    }
+
+    connection.rollback(() => callback?.());
+  },
+};
